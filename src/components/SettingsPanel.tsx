@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Settings, 
   Power, 
@@ -9,15 +9,22 @@ import {
   Pause,
   RefreshCw,
   Zap,
-  AlertTriangle
+  AlertTriangle,
+  Globe,
+  Search,
+  FileCheck
 } from 'lucide-react';
 import type { AutomationSettings, UserProfile, JobPreference, AppliedJob } from '../App';
+import JobApplicationAgent, { JobListing, checkInternetConnection } from '../agents/JobAgent';
 
 interface SettingsPanelProps {
   settings: AutomationSettings;
   setSettings: (settings: AutomationSettings) => void;
   lastRunTime: string;
   setLastRunTime: (time: string) => void;
+  profile?: UserProfile;
+  preferences?: JobPreference;
+  onJobApplied?: (job: AppliedJob) => void;
 }
 
 // Sample job data for simulation
@@ -42,13 +49,91 @@ const SAMPLE_DEPARTMENTS = ['Computer Science', 'Information Technology', 'Softw
 
 const SAMPLE_SALARIES = ['$45,000 - $65,000', '$50,000 - $70,000', '$55,000 - $80,000', '$60,000 - $85,000', '$65,000 - $90,000', '$70,000 - $95,000', '$75,000 - $100,000', '$80,000 - $110,000'];
 
-export default function SettingsPanel({ settings, setSettings, lastRunTime, setLastRunTime }: SettingsPanelProps) {
+export default function SettingsPanel({ settings, setSettings, lastRunTime, setLastRunTime, profile, preferences, onJobApplied }: SettingsPanelProps) {
   const [isRunning, setIsRunning] = useState(false);
   const [runLog, setRunLog] = useState<string[]>(() => {
     const saved = localStorage.getItem('autoapply_runlog');
     return saved ? JSON.parse(saved) : [];
   });
   const [showConfirmReset, setShowConfirmReset] = useState(false);
+  const [internetStatus, setInternetStatus] = useState<'checking' | 'connected' | 'disconnected'>('checking');
+  const [foundJobs, setFoundJobs] = useState<JobListing[]>([]);
+  const agentRef = useRef<JobApplicationAgent | null>(null);
+
+  // Check internet connection on mount
+  useEffect(() => {
+    checkInternetConnection()
+      .then(() => setInternetStatus('connected'))
+      .catch(() => setInternetStatus('disconnected'));
+    
+    const interval = setInterval(() => {
+      checkInternetConnection()
+        .then(() => setInternetStatus('connected'))
+        .catch(() => setInternetStatus('disconnected'));
+    }, 30000); // Check every 30 seconds
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Initialize agent when settings change
+  useEffect(() => {
+    if (agentRef.current) {
+      agentRef.current.stop();
+      agentRef.current = null;
+    }
+
+    if (settings.enabled && profile && preferences) {
+      agentRef.current = new JobApplicationAgent(
+        {
+          keywords: preferences.keywords,
+          locations: preferences.locations,
+          departments: preferences.departments,
+          minSalary: preferences.salaryMin,
+          maxApplicationsPerDay: settings.maxApplicationsPerDay,
+        },
+        profile
+      );
+
+      agentRef.current.setLogCallback((message) => {
+        setRunLog(prev => [`[${new Date().toLocaleTimeString()}] ${message}`, ...prev].slice(0, 50));
+      });
+
+      agentRef.current.setJobFoundCallback((job) => {
+        setFoundJobs(prev => [job, ...prev].slice(0, 20));
+      });
+
+      agentRef.current.setApplicationCallback((job, applicationId) => {
+        const newJob: AppliedJob = {
+          id: applicationId,
+          company: job.company,
+          position: job.title,
+          department: job.department,
+          appliedDate: new Date().toISOString(),
+          status: 'applied',
+          location: job.location,
+          salary: job.salary,
+        };
+        
+        // Update applied jobs in localStorage
+        const savedJobs = localStorage.getItem('autoapply_jobs');
+        const jobs: AppliedJob[] = savedJobs ? JSON.parse(savedJobs) : [];
+        jobs.push(newJob);
+        localStorage.setItem('autoapply_jobs', JSON.stringify(jobs));
+        
+        if (onJobApplied) {
+          onJobApplied(newJob);
+        }
+      });
+
+      agentRef.current.start();
+    }
+
+    return () => {
+      if (agentRef.current) {
+        agentRef.current.stop();
+      }
+    };
+  }, [settings.enabled, settings.maxApplicationsPerDay, profile, preferences, onJobApplied]);
 
   useEffect(() => {
     localStorage.setItem('autoapply_runlog', JSON.stringify(runLog));
@@ -156,6 +241,17 @@ export default function SettingsPanel({ settings, setSettings, lastRunTime, setL
                   Last run: {new Date(lastRunTime).toLocaleString()}
                 </p>
               )}
+              {/* Internet Status Indicator */}
+              <div className="flex items-center gap-2 mt-2">
+                <div className={`w-2 h-2 rounded-full ${
+                  internetStatus === 'connected' ? 'bg-green-500' :
+                  internetStatus === 'disconnected' ? 'bg-red-500' : 'bg-yellow-500'
+                }`} />
+                <span className="text-xs text-gray-600">
+                  {internetStatus === 'connected' ? 'Internet Connected' :
+                   internetStatus === 'disconnected' ? 'No Internet' : 'Checking...'}
+                </span>
+              </div>
             </div>
           </div>
           <div className="flex gap-2">
@@ -199,6 +295,66 @@ export default function SettingsPanel({ settings, setSettings, lastRunTime, setL
           </div>
         </div>
       </div>
+
+      {/* Agent Status & Found Jobs */}
+      {settings.enabled && (
+        <div className="bg-white rounded-2xl border border-indigo-100 shadow-sm p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center">
+              <Globe className="w-5 h-5 text-indigo-600" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-gray-800">Agent Status</h3>
+              <p className="text-sm text-gray-500">Live job search and application tracking</p>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            <div className="p-4 bg-green-50 rounded-xl border border-green-100">
+              <div className="flex items-center gap-2">
+                <Search className="w-4 h-4 text-green-600" />
+                <span className="text-sm text-green-700">Jobs Found</span>
+              </div>
+              <p className="text-2xl font-bold text-green-800 mt-1">{foundJobs.length}</p>
+            </div>
+            <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
+              <div className="flex items-center gap-2">
+                <FileCheck className="w-4 h-4 text-blue-600" />
+                <span className="text-sm text-blue-700">Applications</span>
+              </div>
+              <p className="text-2xl font-bold text-blue-800 mt-1">{runLog.filter(l => l.includes('✓')).length}</p>
+            </div>
+            <div className="p-4 bg-purple-50 rounded-xl border border-purple-100">
+              <div className="flex items-center gap-2">
+                <Zap className="w-4 h-4 text-purple-600" />
+                <span className="text-sm text-purple-700">Agent Status</span>
+              </div>
+              <p className="text-sm font-bold text-purple-800 mt-1">
+                {agentRef.current?.isActive ? 'Active' : 'Inactive'}
+              </p>
+            </div>
+          </div>
+
+          {foundJobs.length > 0 && (
+            <div className="border-t border-gray-100 pt-4">
+              <h4 className="text-sm font-medium text-gray-700 mb-3">Recently Found Jobs</h4>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {foundJobs.slice(0, 5).map((job) => (
+                  <div key={job.id} className="p-3 bg-gray-50 rounded-lg border border-gray-100">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-gray-800">{job.title}</p>
+                        <p className="text-xs text-gray-500">{job.company} • {job.location}</p>
+                      </div>
+                      <span className="text-xs text-green-600 font-medium">{job.salary}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Schedule Settings */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">

@@ -164,6 +164,11 @@ function App() {
             setSettings={setSettings}
             lastRunTime={lastRunTime}
             setLastRunTime={setLastRunTime}
+            profile={profile}
+            preferences={preferences}
+            onJobApplied={(job) => {
+              setAppliedJobs(prev => [...prev, job]);
+            }}
           />
         );
       default:
